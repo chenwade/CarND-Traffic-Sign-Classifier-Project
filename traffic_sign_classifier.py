@@ -530,6 +530,12 @@ if __name__ == '__main__':
             plot_img(new_img[i])
             plt.show()
 
+
+    with tf.Session() as sess:
+        sess.run(tf.global_variables_initializer())
+        saver.restore(sess, tf.train.latest_checkpoint('models/'))
+        # saver.restore(sess, 'models/' + 'early_stopping_checkpoint')
+
         for i in range(num_images):
             top5_classes = np.array(sign_names.SignName[top5[1][i, :]])
             top5_probs = np.array(top5[0][i, :])
@@ -557,10 +563,5 @@ if __name__ == '__main__':
             plt.tight_layout()
 
             plt.show()
-
-
-
-
-
-    a = 1
+            
 
