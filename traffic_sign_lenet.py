@@ -1,24 +1,74 @@
 # Load pickled data
+import pickle
 import numpy as np
 import matplotlib.pyplot as plt
-#plt.switch_backend('agg')
+# plt.switch_backend('agg')
 import tensorflow as tf
-
+from tensorflow.contrib.layers import flatten
+import os
 import seaborn as sns
 import pandas as pd
 import collections
 import random
 
+from importlib import reload
+from preprocess import *
+from skimage import exposure
+from keras.utils import np_utils
 from sklearn.utils import shuffle
 from cnn_model import *
 from helper import *
+
+import sys
+import time
 
 tf.logging.set_verbosity(tf.logging.INFO)
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
-def visualize_data(X_train, y_train, X_valid, y_valid, X_test, y_test):
 
+def evaluate_model(X_data, y_data, model_name, batch_size=64):
+
+    assert len(X_data) == len(y_data)
+    # ## construct tensorflow graph ##
+    # ----------------
+    lenet_graph = tf.Graph()
+    with lenet_graph.as_default():
+        x = tf.placeholder(tf.float32, (None, 32, 32, 1))
+        y = tf.placeholder(tf.int32, (None))
+        one_hot_y = tf.one_hot(y, n_classes)
+
+        #is_dropout = tf.placeholder(tf.bool)
+        logits = get_LeNet(x, n_classes=n_classes)
+
+        correct_prediction = tf.equal(tf.argmax(logits, 1), tf.argmax(one_hot_y, 1))
+        accuracy_operation = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
+
+
+
+    # evaluate the model by using test data
+    num_examples = len(X_data)
+    total_accuracy = 0
+    with tf.Session(graph=lenet_graph) as sess:
+        saver = tf.train.Saver()
+        try:
+            saver.restore(sess, 'models/' + model_name)
+        except:
+            print("Failed restoring previously trained model: file does not exist.")
+            pass
+
+        sess = tf.get_default_session()
+        for offset in range(0, num_examples, batch_size):
+            batch_x, batch_y = X_data[offset: offset + batch_size], y_data[offset: offset + batch_size]
+            accuracy = sess.run(accuracy_operation, feed_dict={x: batch_x, y: batch_y})
+            total_accuracy += (accuracy * batch_size)
+
+        accuracy = total_accuracy / num_examples
+        print("================= Evaluate ==================")
+        print("Model evaluate accuracy = %.4f" % accuracy)
+
+
+def visualize_data(y_train, y_valid, y_test):
     n_classes = len(np.unique(y_train))
     # We will load the sign names from the provided csv file and add a counter to each sign class
     sign_names = pd.read_csv('signnames.csv')
@@ -66,7 +116,7 @@ def visualize_data(X_train, y_train, X_valid, y_valid, X_test, y_test):
     # visualize all classes
     implot, axes = plt.subplots(5, 9, figsize=(25, 15))
     for classid in range(n_classes):
-        X_class = X_train[y_train==classid]
+        X_class = X_train[y_train == classid]
         rnd_idx = random.sample(range(len(X_class)), 1)
 
         row = classid // 9
@@ -83,7 +133,7 @@ def visualize_data(X_train, y_train, X_valid, y_valid, X_test, y_test):
     for classid in bottom10:
         print(sign_names.SignName[classid], ':')
         implot = plt.figure(figsize=(12, 1))
-        X_class = X_train[y_train==classid]
+        X_class = X_train[y_train == classid]
         rnd_idx = random.sample(range(len(X_class)), 10)
         for i in range(10):
             ax = implot.add_subplot(1, 10, i + 1)
@@ -98,7 +148,7 @@ def visualize_data(X_train, y_train, X_valid, y_valid, X_test, y_test):
     for classid in top10:
         print(sign_names.SignName[classid], ':')
         implot = plt.figure(figsize=(12, 1))
-        X_class = X_train[y_train==classid]
+        X_class = X_train[y_train == classid]
         rnd_idx = random.sample(range(len(X_class)), 10)
         for i in range(10):
             ax = implot.add_subplot(1, 10, i + 1)
@@ -108,7 +158,7 @@ def visualize_data(X_train, y_train, X_valid, y_valid, X_test, y_test):
         plt.show()
 
 
-def modern_cnn_modeling(X_train, y_train, X_valid, y_valid, X_test, y_test, params):
+def lenet_modeling(X_train, y_train, X_valid, y_valid, X_test, y_test, params):
 
     lr, max_epoches, batch_size, l2_lambda, model_name, resume_training, early_stopping_patience, epochs_print = params
     n_classes = len(np.unique(y_train))
@@ -116,30 +166,34 @@ def modern_cnn_modeling(X_train, y_train, X_valid, y_valid, X_test, y_test, para
     start = time.time()
     # ## construct tensorflow graph ##
     # ----------------
-    modern_cnn_graph = tf.Graph()
-    with modern_cnn_graph.as_default():
+    lenet_graph = tf.Graph()
+    with lenet_graph.as_default():
         x = tf.placeholder(tf.float32, (None, 32, 32, 1))
         y = tf.placeholder(tf.int32, (None))
         one_hot_y = tf.one_hot(y, n_classes)
 
-        is_dropout = tf.placeholder(tf.bool)
-        logits = get_modern_cnn(x, n_classes=n_classes, dropout=is_dropout)
+        #is_dropout = tf.placeholder(tf.bool)
+        logits = get_LeNet(x, n_classes=n_classes)
+        logits_probs = tf.nn.softmax(logits)
 
         optimizer = tf.train.AdamOptimizer(learning_rate=lr)
+
+        with tf.variable_scope('fc3', reuse=True):
+            reg_fc3 = tf.nn.l2_loss(tf.get_variable('weights'))
 
         with tf.variable_scope('fc4', reuse=True):
             reg_fc4 = tf.nn.l2_loss(tf.get_variable('weights'))
 
         cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits, labels=one_hot_y)
         # L2 regularize
-        loss_operation = tf.reduce_mean(cross_entropy + l2_lambda * reg_fc4)
+        loss_operation = tf.reduce_mean(cross_entropy + l2_lambda * (reg_fc3 + reg_fc4))
         correct_prediction = tf.equal(tf.argmax(logits, 1), tf.argmax(one_hot_y, 1))
         accuracy_operation = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
-        training_operation = optimizer.minimize(loss_operation)
+        training_operation = optimizer.minimize((loss_operation))
 
     # ##  train models ## #
     # ---------------------
-    with tf.Session(graph=modern_cnn_graph) as sess:
+    with tf.Session(graph=lenet_graph) as sess:
         sess.run(tf.global_variables_initializer())
 
         def acc_and_loss(X_data, y_data, batch_size=64):
@@ -150,7 +204,7 @@ def modern_cnn_modeling(X_train, y_train, X_valid, y_valid, X_test, y_test, para
             for offset in range(0, num_examples, batch_size):
                 batch_x, batch_y = X_data[offset:offset + batch_size], y_data[offset:offset + batch_size]
                 [accuracy, softmax] = sess.run([accuracy_operation, cross_entropy],
-                                               feed_dict={x: batch_x, y: batch_y, is_dropout: False})
+                                               feed_dict={x: batch_x, y: batch_y})
                 total_accuracy += (accuracy * len(batch_x))
                 softmax_cross_entropy.extend(softmax)
             return total_accuracy / num_examples, np.mean(softmax_cross_entropy)
@@ -159,7 +213,7 @@ def modern_cnn_modeling(X_train, y_train, X_valid, y_valid, X_test, y_test, para
         # If we chose to keep training previously trained model, restore session.
         if resume_training:
             try:
-                tf.train.Saver().restore(sess, 'models/' + model_name)
+                tf.train.Saver().restore(sess,'models/' + model_name)
             except Exception as e:
                 print(e)
                 print("Failed restoring previously trained model: file does not exist.")
@@ -179,7 +233,7 @@ def modern_cnn_modeling(X_train, y_train, X_valid, y_valid, X_test, y_test, para
             for offset in range(0, train_num, batch_size):
                 batch_x = X_train[offset: offset + batch_size]
                 batch_y = y_train[offset: offset + batch_size]
-                sess.run(training_operation, feed_dict={x: batch_x, y: batch_y, is_dropout: False})
+                sess.run(training_operation, feed_dict={x: batch_x, y: batch_y})
 
             training_acc, training_loss = acc_and_loss(X_train, y_train)
             valid_acc, valid_loss = acc_and_loss(X_valid, y_valid)
@@ -203,7 +257,7 @@ def modern_cnn_modeling(X_train, y_train, X_valid, y_valid, X_test, y_test, para
                     break
 
 
-        ### Evaluate model ###
+        ### evaluate model ###
         test_acc, test_loss = acc_and_loss(X_test, y_test)
         valid_acc, valid_loss = acc_and_loss(X_valid, y_valid)
         print("=============================================")
@@ -222,48 +276,6 @@ def modern_cnn_modeling(X_train, y_train, X_valid, y_valid, X_test, y_test, para
         print("Model saved")
 
         # plot_history(model_name)
-
-
-
-def evaluate_model(X_data, y_data, model_name, batch_size=64):
-
-    assert len(X_data) == len(y_data)
-    n_classes = len(np.unique(y_data))
-    # ## construct tensorflow graph ##
-    # ----------------
-    modern_cnn_graph = tf.Graph()
-    with modern_cnn_graph.as_default():
-        x = tf.placeholder(tf.float32, (None, 32, 32, 1))
-        y = tf.placeholder(tf.int32, (None))
-        one_hot_y = tf.one_hot(y, n_classes)
-
-        #is_dropout = tf.placeholder(tf.bool)
-        is_dropout = tf.placeholder(tf.bool)
-        logits = get_modern_cnn(x, n_classes=n_classes, dropout=is_dropout)
-
-        correct_prediction = tf.equal(tf.argmax(logits, 1), tf.argmax(one_hot_y, 1))
-        accuracy_operation = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
-
-    # evaluate the model by using test data
-    num_examples = len(X_data)
-    total_accuracy = 0
-    with tf.Session(graph=modern_cnn_graph) as sess:
-        saver = tf.train.Saver()
-        try:
-            saver.restore(sess, 'models/' + model_name)
-        except:
-            print("Failed restoring previously trained model: file does not exist.")
-            pass
-
-        sess = tf.get_default_session()
-        for offset in range(0, num_examples, batch_size):
-            batch_x, batch_y = X_data[offset: offset + batch_size], y_data[offset: offset + batch_size]
-            accuracy = sess.run(accuracy_operation, feed_dict={x: batch_x, y: batch_y, is_dropout: False})
-            total_accuracy += (accuracy * batch_size)
-
-        accuracy = total_accuracy / num_examples
-        print("================= Evaluate ==================")
-        print("Model evaluate accuracy = %.4f" % accuracy)
 
 
 if __name__ == '__main__':
@@ -293,11 +305,10 @@ if __name__ == '__main__':
 
     #### Preprocess the data  ####
     # augment the training dataset 7 times
-    X_trn_pp, y_trn_pp = preprocess_data(X_train, y_train, dataset="train", augment=1, preprocess=True)
+    X_trn_pp, y_trn_pp = preprocess_data(X_train, y_train, dataset="train", augment=7, preprocess=True)
     X_val_pp, y_val_pp = preprocess_data(X_valid, y_valid, dataset="valid", augment=1, preprocess=True)
     X_tst_pp, y_tst_pp = preprocess_data(X_test, y_test, dataset="test", augment=1, preprocess=True)
 
-    """
     # show the preprocessed images
     implot = plt.figure(figsize=(12, 4))
     rnd_idx = random.sample(range(len(X_train)), 10)
@@ -313,32 +324,6 @@ if __name__ == '__main__':
         ax2.imshow(img_preprocess(X_train[rnd_idx[i]])[:, :, 0], cmap='gray')
     plt.show()
 
-    # show the augment image
-    rnd_idx = random.sample(range(len(X_train)), 5)
-    fig, axes = plt.subplots(5, 5, figsize=(8, 15))
-    print("From Left to right: Original Img, Histogram Equalization, Rotate, Motion Blur and Affine")
-    for i in range(5):
-        axes[i, 0].grid(False)
-        axes[i, 0].axis('off')
-        axes[i, 0].imshow(X_train[rnd_idx[i]])
-
-        axes[i, 1].grid(False)
-        axes[i, 1].axis('off')
-        axes[i, 1].imshow(Adapthisteq(X_train[rnd_idx[i]]))
-
-        axes[i, 2].grid(False)
-        axes[i, 2].axis('off')
-        axes[i, 2].imshow(rotate(X_train[rnd_idx[i]]))
-
-        axes[i, 3].grid(False)
-        axes[i, 3].axis('off')
-        axes[i, 3].imshow(motion_blur(X_train[rnd_idx[i]]))
-
-        axes[i, 4].grid(False)
-        axes[i, 4].axis('off')
-        axes[i, 4].imshow(affine(X_train[rnd_idx[i]]))
-    plt.show()
-    """
     #### Normalize the data set ####
     mean = np.mean(X_trn_pp)
     stdd = np.std(X_trn_pp)
@@ -348,7 +333,7 @@ if __name__ == '__main__':
 
 
     #### Control panel 1, setup model parameters ####
-    model_name = 'new_cnn_'
+    model_name = 'lenet_'
 
     max_epoches = 300
     batch_size = 64
@@ -361,14 +346,13 @@ if __name__ == '__main__':
     early_stopping_patience = 50
 
     params = [lr, max_epoches, batch_size, l2_lambda, model_name,
-              resume_training, early_stopping_patience, epochs_print]
+             resume_training, early_stopping_patience, epochs_print]
 
     #### train the model and evaluate the mode ###
-    modern_cnn_modeling(scaled_X_trn_pp, y_trn_pp, scaled_X_val_pp, y_val_pp, scaled_X_tst_pp, y_tst_pp, params=params)
+    lenet_modeling(scaled_X_trn_pp, y_trn_pp, scaled_X_val_pp, y_val_pp, scaled_X_tst_pp, y_tst_pp, params=params)
 
     #### Control panel 2, setup model parameters ####
-    # Modify learning rate
-    model_name = 'new_cnn_'
+    model_name = 'lenet_'
 
     max_epoches = 300
     batch_size = 64
@@ -383,91 +367,10 @@ if __name__ == '__main__':
     params = [lr, max_epoches, batch_size, l2_lambda, model_name,
               resume_training, early_stopping_patience, epochs_print]
 
-    ####  Fine tuning the model ###
-    modern_cnn_modeling(scaled_X_trn_pp, y_trn_pp, scaled_X_val_pp, y_val_pp, scaled_X_tst_pp, y_tst_pp, params=params)
-    
+    #### Modify learning rate and fine tuning the model ###
+    lenet_modeling(scaled_X_trn_pp, y_trn_pp, scaled_X_val_pp, y_val_pp, scaled_X_tst_pp, y_tst_pp, params=params)
+
     #### Evaluate the trained model ####
     evaluate_model(scaled_X_tst_pp, y_tst_pp, model_name)
-
-    #### Analyse models ####
-
-    ###  Find some images from the internet and analyse them
-    new_img, new_label = read_all_imgs('input/')
-    X_new = np.array(new_img)
-    y_new = np.array(new_label)
-    sign_names = pd.read_csv('signnames.csv')
-
-    implot, axes = plt.subplots(2, 5, figsize=(12, 8))
-    for i in range(10):
-        row = i // 5
-        col = i % 5
-        axes[row, col].imshow(X_new[i])
-        axes[row, col].grid(False)
-        axes[row, col].axis('off')
-        axes[row, col].set_title(sign_names.SignName[new_label[i]])
-    plt.show()
-
-    # preprocess the test data
-    X_new_pp = preprocess_array(X_new)
-
-    # normalize the test data
-    scaled_X_new = (X_new_pp - mean) / stdd
-
-    model_name = 'new_cnn_'
-
-    #  build graph
-    modern_cnn_graph = tf.Graph()
-    with modern_cnn_graph.as_default():
-        x = tf.placeholder(tf.float32, (None, 32, 32, 1))
-        y = tf.placeholder(tf.int32, (None))
-        one_hot_y = tf.one_hot(y, n_classes)
-
-        is_dropout = tf.placeholder(tf.bool)
-        logits = get_modern_cnn(x, n_classes=n_classes, dropout=is_dropout)
-        logit_probs = tf.nn.softmax(logits)
-        correct_prediction = tf.equal(tf.argmax(logits, 1), tf.argmax(one_hot_y, 1))
-        accuracy_operation = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
-
-    # ##  evaluate models on the internet images## #
-    with tf.Session(graph=modern_cnn_graph) as sess:
-        saver = tf.train.Saver()
-        sess.run(tf.global_variables_initializer())
-        saver.restore(sess, 'models/' + model_name)
-        accuacy, logits_probs = sess.run([accuracy_operation, logit_probs],
-                                         feed_dict={x: scaled_X_new, y: y_new, is_dropout: False})
-
-        top5 = sess.run(tf.nn.top_k(tf.constant(logits_probs), k=5))
-
-        for i in range(10):
-            top5_classes = np.array(sign_names.SignName[top5[1][i, :]])
-            top5_probs = np.array(top5[0][i, :])
-
-            implot = plt.figure(figsize=(10, 4))
-
-            ax = implot.add_subplot(1, 2, 1)
-            ax.grid(False)
-            ax.axis('off')
-            ax.imshow(X_new[i])
-            ax.set_title(sign_names.SignName[y_new[i]])
-
-            y_pos = np.arange(len(top5_classes))
-
-            ax2 = implot.add_subplot(1, 2, 2)
-            ax2.barh(y_pos, top5_probs, align='center')
-            ax2.set_yticks(y_pos)
-            ax2.set_yticklabels(top5_classes)
-            ax2.yaxis.set_ticks_position('right')
-            ax2.set_xlabel('Top 5 Probabilities')
-            ax2.set_title('Classes')
-            ax2.set_xlim([0, 1])
-
-            plt.tight_layout()
-
-            plt.show()
-
-        print("=============================================")
-        print("The  accuracy = %.4f)" % accuacy)
-
-
 
 
