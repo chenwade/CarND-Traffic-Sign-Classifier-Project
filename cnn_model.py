@@ -380,7 +380,9 @@ if __name__ == "__main__":
     X_test, y_test = test['features'], test['labels'].astype(np.int32)
 
     # from traffic_sign_classifier import get_preprocessed_data
-    X_trn_pp, X_val_pp, X_tst_pp = get_preprocessed_data(X_train, X_valid, X_test)
+    X_trn_pp, y_trn_pp = preprocess_data(X_train, y_train, dataset="train", augment=1, preprocess=True)
+    X_val_pp, y_val_pp = preprocess_data(X_valid, y_valid, dataset="valid", augment=1, preprocess=True)
+    X_tst_pp, y_tst_pp = preprocess_data(X_test, y_test, dataset="test", augment=1, preprocess=True)
 
     mnist_classifier = tf.estimator.Estimator(
         model_fn=get_modern_cnn1, model_dir="/tmp/cnn_model")

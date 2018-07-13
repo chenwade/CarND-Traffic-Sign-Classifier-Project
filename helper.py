@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import cv2
 import os
 import pickle
+import itertools
 
 class EarlyStopping(object):
     """
@@ -73,7 +74,6 @@ class EarlyStopping(object):
             return True
 
         return False
-
 
 
 def load_traffic_sign_data(path):
@@ -153,3 +153,54 @@ def read_all_imgs(path, color=cv2.IMREAD_COLOR):
             labels.append(int(label))
 
     return images, labels
+
+
+def plot_confusion_matrix(cm, classes, normalize=False, title='Confusion matrix', cmap=plt.cm.Blues):
+    """
+    This function prints and plots the confusion matrix.
+    Normalization can be applied by setting `normalize=True`.
+    (This function is copied from the scikit docs.)
+    """
+    plt.figure(figsize=(20, 20))
+    plt.imshow(cm, interpolation='nearest', cmap=cmap)
+    # plt.title(title)
+    plt.colorbar()
+    tick_marks = np.arange(len(classes))
+    plt.xticks(tick_marks, classes, rotation=45)
+    plt.yticks(tick_marks, classes)
+
+    if normalize:
+        cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+    print(cm)
+    thresh = cm.max() / 2.
+    for i, j in itertools.product(range(cm.shape[0]), range(cm.shape[1])):
+        plt.text(j, i, cm[i, j], horizontalalignment="center", color="white" if cm[i, j] > thresh else "black")
+
+    plt.tight_layout()
+    plt.ylabel('True label')
+    plt.xlabel('Predicted label')
+    plt.show()
+
+
+def find_topk_confusion(confusion_matrix, k):
+    # This function helps us find top k group of classes which are easy to confuse
+    cm_shape = list(confusion_matrix.shape)
+    assert len(cm_shape) == 2
+    assert cm_shape[0] >= k > 0
+
+    cm = np.copy(confusion_matrix)
+    # mask the diagnonal elements
+    for i in range(cm_shape[0]):
+        cm[i][i] = 0
+
+    # get the index and value of maximum elements in the cm
+    positions = np.argmax(cm, axis=1)
+    values = [cm[i][positions[i]] for i in range(cm_shape[0])]
+
+    # get the top k original classes and their corresponding confuse classes
+    topk_class = np.argsort(values)[:-1-k : -1]
+    topk_confuse_class = positions[topk_class]
+
+    return topk_class, topk_confuse_class
+
+

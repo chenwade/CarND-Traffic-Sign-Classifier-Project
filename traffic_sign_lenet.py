@@ -44,8 +44,6 @@ def evaluate_model(X_data, y_data, model_name, batch_size=64):
         correct_prediction = tf.equal(tf.argmax(logits, 1), tf.argmax(one_hot_y, 1))
         accuracy_operation = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
 
-
-
     # evaluate the model by using test data
     num_examples = len(X_data)
     total_accuracy = 0
@@ -218,7 +216,8 @@ def lenet_modeling(X_train, y_train, X_valid, y_valid, X_test, y_test, params):
                 print(e)
                 print("Failed restoring previously trained model: file does not exist.")
                 pass
-        print("Training new model...")
+        else:
+            print("Training new model...")
 
         early_stopping = EarlyStopping(saver, sess, model_name, patience=early_stopping_patience, minimize=True)
 
@@ -274,8 +273,7 @@ def lenet_modeling(X_train, y_train, X_valid, y_valid, X_test, y_test, params):
                  valid_accuracy_history=valid_accuracy_history)
 
         print("Model saved")
-
-        # plot_history(model_name)
+        plot_history(model_name)
 
 
 if __name__ == '__main__':

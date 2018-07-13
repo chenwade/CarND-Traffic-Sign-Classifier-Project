@@ -12,10 +12,11 @@ import random
 from sklearn.utils import shuffle
 from cnn_model import *
 from helper import *
+from sklearn.metrics import confusion_matrix
 
 tf.logging.set_verbosity(tf.logging.INFO)
-os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+# os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 def visualize_data(X_train, y_train, X_valid, y_valid, X_test, y_test):
 
@@ -164,7 +165,8 @@ def modern_cnn_modeling(X_train, y_train, X_valid, y_valid, X_test, y_test, para
                 print(e)
                 print("Failed restoring previously trained model: file does not exist.")
                 pass
-        print("Training new model...")
+        else:
+            print("Training new model...")
 
         early_stopping = EarlyStopping(saver, sess, model_name, patience=early_stopping_patience, minimize=True)
 
@@ -220,7 +222,6 @@ def modern_cnn_modeling(X_train, y_train, X_valid, y_valid, X_test, y_test, para
                  valid_accuracy_history=valid_accuracy_history)
 
         print("Model saved")
-
         # plot_history(model_name)
 
 
@@ -237,10 +238,8 @@ def evaluate_model(X_data, y_data, model_name, batch_size=64):
         y = tf.placeholder(tf.int32, (None))
         one_hot_y = tf.one_hot(y, n_classes)
 
-        #is_dropout = tf.placeholder(tf.bool)
         is_dropout = tf.placeholder(tf.bool)
         logits = get_modern_cnn(x, n_classes=n_classes, dropout=is_dropout)
-
         correct_prediction = tf.equal(tf.argmax(logits, 1), tf.argmax(one_hot_y, 1))
         accuracy_operation = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
 
@@ -255,7 +254,7 @@ def evaluate_model(X_data, y_data, model_name, batch_size=64):
             print("Failed restoring previously trained model: file does not exist.")
             pass
 
-        sess = tf.get_default_session()
+        predict_y = np.empty([0], dtype=np.int32)
         for offset in range(0, num_examples, batch_size):
             batch_x, batch_y = X_data[offset: offset + batch_size], y_data[offset: offset + batch_size]
             accuracy = sess.run(accuracy_operation, feed_dict={x: batch_x, y: batch_y, is_dropout: False})
@@ -264,6 +263,142 @@ def evaluate_model(X_data, y_data, model_name, batch_size=64):
         accuracy = total_accuracy / num_examples
         print("================= Evaluate ==================")
         print("Model evaluate accuracy = %.4f" % accuracy)
+
+
+def failure_analyse(X_data, y_data, model_name, batch_size=64):
+
+    assert len(X_data) == len(y_data)
+    n_classes = len(np.unique(y_data))
+    # ## construct tensorflow graph ##
+    # ----------------
+    modern_cnn_graph = tf.Graph()
+    with modern_cnn_graph.as_default():
+        x = tf.placeholder(tf.float32, (None, 32, 32, 1))
+        y = tf.placeholder(tf.int32, (None))
+
+        is_dropout = tf.placeholder(tf.bool)
+        logits = get_modern_cnn(x, n_classes=n_classes, dropout=is_dropout)
+        prediction = tf.argmax(logits, 1)
+
+    # evaluate the model by using test data
+    num_examples = len(X_data)
+    with tf.Session(graph=modern_cnn_graph) as sess:
+        saver = tf.train.Saver()
+        try:
+            saver.restore(sess, 'models/' + model_name)
+        except:
+            print("Failed restoring previously trained model: file does not exist.")
+            pass
+
+        predict_y = np.empty([0], dtype=np.int32)
+        for offset in range(0, num_examples, batch_size):
+            batch_x, batch_y = X_data[offset: offset + batch_size], y_data[offset: offset + batch_size]
+            pred_batch = sess.run(prediction, feed_dict={x: batch_x, y: batch_y, is_dropout: False})
+
+            predict_y = np.append(predict_y, pred_batch)
+
+    ###  Analyse the incorrect recognize images ####
+    incorrect_index = np.nonzero(predict_y != y_data)[0]
+    print("Total test samples = %d, unrecognized test samples = %d " % (num_examples, len(incorrect_index)))
+
+    incorrect_classes = [y_data[i] for i in incorrect_index]
+
+    df2 = pd.DataFrame.from_dict(collections.Counter(incorrect_classes), orient='index')
+    df2 = df2.rename(columns={'index': 'ClassId', 0: 'Incorrect'})
+
+    sign_names = pd.read_csv('signnames.csv')
+    sign_names['Incorrect'] = df2['Incorrect']
+    sign_names.fillna(value=0, inplace=True)
+
+    index = np.arange(n_classes)
+    sns.barplot(sign_names['SignName'].values, sign_names['Incorrect'].values, alpha=0.8, figsize=(20, 12))
+    plt.xticks(index, sign_names['SignName'].values, rotation=90)
+
+    plt.title('Incorrect number of Sign Classes', fontsize=12)
+    plt.ylabel('Incorrect Classification', fontsize=12)
+    plt.subplots_adjust(bottom=0.5)
+    plt.show()
+
+    # Using confusion matrix to analyse the incorrect data
+    cm = confusion_matrix(y_data, predict_y)
+    plot_confusion_matrix(cm, sign_names['ClassId'].values)
+
+    k = 5
+    classses, confuse_classes = find_topk_confusion(cm, 5)
+
+    testing_file = path + 'test.p'
+    with open(testing_file, mode='rb') as f:
+        test = pickle.load(f)
+    test_images, test_labels = test['features'], test['labels']
+
+    for i in range(k):
+        origin_class_images = test_images[test_labels == classses[i]]
+        idx1 = random.sample(range(len(origin_class_images)), 10)
+        confuse_class_images = test_images[test_labels == confuse_classes[i]]
+        idx2 = random.sample(range(len(confuse_class_images)), 10)
+
+        fig, axes = plt.subplots(2, 10, figsize=(12, 4))
+        for j in range(10):
+            axes[0, j].imshow(origin_class_images[idx1[j]])
+            axes[0, j].grid(False)
+            axes[0, j].axis('off')
+            axes[1, j].imshow(confuse_class_images[idx2[j]])
+            axes[1, j].grid(False)
+            axes[1, j].axis('off')
+        class_name = sign_names['SignName'].values[classses[i]]
+        confuse_class_name = sign_names['SignName'].values[confuse_classes[i]]
+        suptitle = class_name + '  vs  ' + confuse_class_name
+        print("%s is easy to confuse with %s" % (class_name, confuse_class_name))
+        fig.suptitle(suptitle, fontsize="x-large")
+        plt.show()
+
+
+def outputFeatureMap(image_input, activation_min=-1, activation_max=-1, plt_num=1):
+
+    """
+    image_input: the test image being fed into the network to produce the feature maps
+    tf_activation: should be a tf variable name used during your training procedure that represents the calculated state of a specific weight layer
+    activation_min/max: can be used to view the activation contrast in more detail, by default matplot sets min and max to the actual min and max values of the output
+    plt_num: used to plot out multiple different weight feature map sets on the same block, just extend the plt number for each new feature map entry
+    """
+
+    modern_cnn_graph = tf.Graph()
+    with modern_cnn_graph.as_default():
+        x = tf.placeholder(tf.float32, (None, 32, 32, 1))
+        is_dropout = tf.placeholder(tf.bool)
+        logits = get_modern_cnn(x, n_classes=n_classes, dropout=is_dropout)
+
+        with tf.variable_scope('conv2', reuse=True):
+            conv2_weights = tf.get_variable('weights')
+
+    with tf.Session(graph=modern_cnn_graph) as sess:
+        sess.run(tf.global_variables_initializer())
+
+        tf.train.Saver().restore(sess, 'models/' + model_name)
+        # If we chose to keep training previously trained model, restore session.
+        print("Restore session...")
+
+        # Here make sure to preprocess your image_input in a way your network expects
+        # with size, normalization, ect if needed
+        # image_input =
+        # Note: x should be the same name as your network's tensorflow data placeholder variable
+        # If you get an error tf_activation is not defined it may be having trouble accessing the variable from inside a function
+        # activation = conv1_weights.eval(session=sess, feed_dict={x: image_input, is_dropout: False})
+        activation = sess.run(conv2_weights, feed_dict={x: image_input, is_dropout: False})
+        featuremaps = activation.shape[3]
+        plt.figure(plt_num, figsize=(15, 15))
+        for featuremap in range(featuremaps):
+            plt.subplot(8, 8, featuremap + 1)  # sets the number of feature maps to show on each row and column
+            plt.title('FeatureMap ' + str(featuremap))  # displays the feature map number
+            if activation_min != -1 & activation_max != -1:
+                plt.imshow(activation[0, :, :, featuremap], interpolation="nearest", vmin=activation_min,
+                           vmax=activation_max, cmap="gray")
+            elif activation_max != -1:
+                plt.imshow(activation[0, :, :, featuremap], interpolation="nearest", vmax=activation_max, cmap="gray")
+            elif activation_min != -1:
+                plt.imshow(activation[0, :, :, featuremap], interpolation="nearest", vmin=activation_min, cmap="gray")
+            else:
+                plt.imshow(activation[:, :, 0, featuremap], interpolation="nearest", cmap="gray")
 
 
 if __name__ == '__main__':
@@ -297,7 +432,7 @@ if __name__ == '__main__':
     X_val_pp, y_val_pp = preprocess_data(X_valid, y_valid, dataset="valid", augment=1, preprocess=True)
     X_tst_pp, y_tst_pp = preprocess_data(X_test, y_test, dataset="test", augment=1, preprocess=True)
 
-    """
+
     # show the preprocessed images
     implot = plt.figure(figsize=(12, 4))
     rnd_idx = random.sample(range(len(X_train)), 10)
@@ -338,7 +473,7 @@ if __name__ == '__main__':
         axes[i, 4].axis('off')
         axes[i, 4].imshow(affine(X_train[rnd_idx[i]]))
     plt.show()
-    """
+
     #### Normalize the data set ####
     mean = np.mean(X_trn_pp)
     stdd = np.std(X_trn_pp)
@@ -385,11 +520,17 @@ if __name__ == '__main__':
 
     ####  Fine tuning the model ###
     modern_cnn_modeling(scaled_X_trn_pp, y_trn_pp, scaled_X_val_pp, y_val_pp, scaled_X_tst_pp, y_tst_pp, params=params)
-    
+
+
+
+    model_name = 'new_cnn_'
     #### Evaluate the trained model ####
     evaluate_model(scaled_X_tst_pp, y_tst_pp, model_name)
 
+
     #### Analyse models ####
+    # failure analyse on test dataset
+    failure_analyse(scaled_X_tst_pp, y_tst_pp, model_name)
 
     ###  Find some images from the internet and analyse them
     new_img, new_label = read_all_imgs('input/')
@@ -407,10 +548,10 @@ if __name__ == '__main__':
         axes[row, col].set_title(sign_names.SignName[new_label[i]])
     plt.show()
 
-    # preprocess the test data
+    # preprocess the new test data
     X_new_pp = preprocess_array(X_new)
 
-    # normalize the test data
+    # normalize the new test data
     scaled_X_new = (X_new_pp - mean) / stdd
 
     model_name = 'new_cnn_'
@@ -466,8 +607,8 @@ if __name__ == '__main__':
             plt.show()
 
         print("=============================================")
-        print("The  accuracy = %.4f)" % accuacy)
+        print("The accuracy of Internet Image = %.4f)" % accuacy)
 
 
-
-
+    #### Output feature map ###
+    outputFeatureMap(scaled_X_tst_pp)
